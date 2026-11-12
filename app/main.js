@@ -293,6 +293,8 @@ function createWindow() {
       "*://*.xiami.com/*",
       "*://i.y.qq.com/*",
       "*://c.y.qq.com/*",
+      "*://u.y.qq.com/*",
+      "*://y.qq.com/*",
       "*://*.kugou.com/*",
       "*://*.kuwo.cn/*",
       "*://*.bilibili.com/*",
@@ -545,7 +547,7 @@ function hack_referer_header(details) {
     add_origin = true;
   }
   if (details.url.includes(".migu.cn")) {
-    referer_value = "http://music.migu.cn/v3/music/player/audio?from=migu";
+    referer_value = "https://music.migu.cn/";
   }
   if (details.url.includes("m.music.migu.cn")) {
     referer_value = "https://m.music.migu.cn/";
@@ -556,25 +558,30 @@ function hack_referer_header(details) {
   let isRefererSet = false;
   let isOriginSet = false;
   let isUASet = false;
-  let headers = details.requestHeaders;
+  const headers = details.requestHeaders || {};
 
-  for (let i = 0, l = headers.length; i < l; ++i) {
-    if (
-      replace_referer &&
-      headers[i].name == "Referer" &&
-      referer_value != ""
-    ) {
-      headers[i].value = referer_value;
-      isRefererSet = true;
-    }
-    if (replace_origin && headers[i].name == "Origin" && referer_value != "") {
-      headers[i].value = origin_value;
-      isOriginSet = true;
-    }
-    if (headers[i].name === "User-Agent" && ua_value !== "") {
-      headers[i].value = ua_value;
-      isUASet = true;
-    }
+  // Electron 的 requestHeaders 是 Record<string, string>，
+  // 与 Chrome 扩展里 [{name, value}] 的数组形式不同，需要按对象处理
+  const findHeaderKey = (name) => {
+    const lower = name.toLowerCase();
+    return Object.keys(headers).find((key) => key.toLowerCase() === lower);
+  };
+
+  const refererKey = findHeaderKey("Referer");
+  const originKey = findHeaderKey("Origin");
+  const uaKey = findHeaderKey("User-Agent");
+
+  if (replace_referer && refererKey && referer_value != "") {
+    headers[refererKey] = referer_value;
+    isRefererSet = true;
+  }
+  if (replace_origin && originKey && referer_value != "") {
+    headers[originKey] = origin_value;
+    isOriginSet = true;
+  }
+  if (uaKey && ua_value !== "") {
+    headers[uaKey] = ua_value;
+    isUASet = true;
   }
 
   if (add_referer && !isRefererSet && referer_value != "") {
@@ -699,6 +706,10 @@ ipcMain.on("openUrl", (event, arg, params) => {
   });
   bWindow.loadURL(arg);
   bWindow.setMenu(null);
+  // 登录窗口关闭后通知渲染进程刷新登录状态
+  bWindow.on("closed", () => {
+    mainWindow?.webContents.send("refreshAuthStatus");
+  });
 });
 
 ipcMain.on("floatWindowMoving", (e, { mouseX, mouseY }) => {
