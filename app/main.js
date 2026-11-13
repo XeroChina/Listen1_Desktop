@@ -5,6 +5,7 @@ const {
   globalShortcut,
   ipcMain,
   Menu,
+  net,
   session,
   screen,
   Tray,
@@ -552,6 +553,25 @@ function hack_referer_header(details) {
   if (details.url.includes("m.music.migu.cn")) {
     referer_value = "https://m.music.migu.cn/";
   }
+  // 咪咕的 v5 站点对 Origin 极其敏感：
+  // Chromium 序列化的 Origin 形式是 scheme://host（没有尾斜杠），
+  // 服务端会把收到的 Origin 原样回显到 Access-Control-Allow-Origin。
+  // 一旦这里把 Origin 改写成带尾斜杠的形式，v5 首页的十几个 XHR 会全部预检失败，
+  // 页面直接“数据加载失败”，登录按钮与 SDK 流程随之不可用。
+  // 因此咪咕请求一律不碰 Origin，只补 Referer。
+  if (details.url.includes(".migu.cn")) {
+    replace_origin = false;
+    add_origin = false;
+  }
+  // 咪咕登录走 passport.migu.cn 的跳转链，改写 Referer 会打断它的校验
+  if (details.url.includes("passport.migu.cn")) {
+    replace_referer = false;
+    add_referer = false;
+    replace_origin = false;
+    add_origin = false;
+    referer_value = "";
+    origin_value = "";
+  }
   if (origin_value == "") {
     origin_value = referer_value;
   }
@@ -710,6 +730,155 @@ ipcMain.on("openUrl", (event, arg, params) => {
   bWindow.on("closed", () => {
     mainWindow?.webContents.send("refreshAuthStatus");
   });
+});
+
+// 咪咕登录态查询。
+//
+// 咪咕 v5 站点（music.migu.cn）的鉴权模型：
+//   - 登录凭据是 cookie `pacmtoken`（域 .migu.cn），由 token-validate 响应下发；
+//   - 已登录判定 = 该 cookie 存在（SDK 的 checkLogin 就是读它）；
+//   - 用户信息接口 GET //c.musicapp.migu.cn/user/h5/user-info/v1.0 只认 `pacmtoken` 请求头
+//     （SDK 的 n7 用 mode:"cors" 且不带 credentials，因此 cookie 不参与，全程靠该请求头）。
+//
+// 渲染进程是 file:// 源，跨站请求会被 CORS 拦死，所以这里放到主进程用 net.request 发起：
+// 不受 CORS 限制，且可以自由设置 pacmtoken / Origin / Referer 等请求头。
+ipcMain.handle("migu:getUser", async () => {
+  const cookies = await session.defaultSession.cookies.get({});
+  const miguCookies = cookies.filter((c) =>
+    c.domain.endsWith("migu.cn")
+  );
+  const readCookie = (name) => {
+    const hit = miguCookies.find((c) => c.name === name && c.value);
+    if (!hit) return "";
+    try {
+      // js-cookie 读取时会做一次 decode，服务端期望的是解码后的值
+      return decodeURIComponent(hit.value);
+    } catch (e) {
+      return hit.value;
+    }
+  };
+  const pacmtoken = readCookie("pacmtoken");
+  const uid = readCookie("mg_auth_uid");
+  // 需要 cookie 鉴权的接口用得到，手动拼 Cookie 头
+  const cookieHeader = miguCookies
+    .map((c) => `${c.name}=${c.value}`)
+    .join("; ");
+
+  const requestJson = (url, headers) =>
+    new Promise((resolve) => {
+      let req;
+      try {
+        req = net.request({
+          url,
+          method: "GET",
+          session: session.defaultSession,
+        });
+      } catch (err) {
+        console.log("migu:getUser request error", url, err);
+        resolve(null);
+        return;
+      }
+      let settled = false;
+      const finish = (value) => {
+        if (!settled) {
+          settled = true;
+          resolve(value);
+        }
+      };
+      req.on("response", (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          try {
+            finish(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          } catch (err) {
+            console.log("migu:getUser parse error", url, err);
+            finish(null);
+          }
+        });
+      });
+      req.on("error", (err) => {
+        console.log("migu:getUser request failed", url, err);
+        finish(null);
+      });
+      Object.entries(headers).forEach(([key, value]) => {
+        if (value) req.setHeader(key, value);
+      });
+      req.end();
+    });
+
+  // 主路径：pacmtoken 请求头鉴权的用户信息接口（不携带 cookie，与 SDK 一致）
+  const userInfo = await requestJson(
+    "https://c.musicapp.migu.cn/user/h5/user-info/v1.0",
+    {
+      pacmtoken,
+      Origin: "https://music.migu.cn",
+      Referer: "https://music.migu.cn/",
+    }
+  );
+  if (userInfo && String(userInfo.code) === "000000") {
+    // 字段语义对齐 v5 SDK 的 K7()：userId / msisdn / smallIcon / nickName
+    const info = userInfo.data || {};
+    return {
+      status: "success",
+      data: {
+        is_login: true,
+        user_id: info.userId || uid || "",
+        user_name: info.msisdn || "",
+        nickname: info.nickName || "",
+        avatar: info.smallIcon || "",
+        platform: "migu",
+        data: userInfo,
+      },
+    };
+  }
+
+  // 兜底：v5 站点自己判断登录态用的 cookie 鉴权接口
+  const trust = await requestJson(
+    "https://app.c.nf.migu.cn/pc/user/home-page/trust-uid/v1.0",
+    {
+      pacmtoken,
+      uid,
+      Cookie: cookieHeader,
+      Origin: "https://music.migu.cn",
+      Referer: "https://music.migu.cn/",
+    }
+  );
+  if (trust && String(trust.code) === "000000") {
+    const payload = trust.data || trust.originData || {};
+    const item = payload.userInfoItem || payload.userInfo || payload;
+    return {
+      status: "success",
+      data: {
+        is_login: true,
+        user_id: item.uid || item.userId || uid || "",
+        user_name: item.msisdn || item.mobile || "",
+        nickname: item.nickName || item.nickname || "",
+        avatar: item.smallIcon || item.headPicUrl || item.avatar || "",
+        platform: "migu",
+        data: trust,
+      },
+    };
+  }
+
+  // 兜底：SDK 的 checkLogin() 在 WEB 分支下只要 pacmtoken cookie 存在就判定已登录，
+  // 因此接口失败（网络波动等）时不应把已登录用户判成未登录。
+  if (pacmtoken) {
+    return {
+      status: "success",
+      data: {
+        is_login: true,
+        user_id: uid || "",
+        user_name: "",
+        nickname: "",
+        avatar: "",
+        platform: "migu",
+        data: { code: "000000", fallback: "cookie" },
+      },
+    };
+  }
+
+  return { status: "fail", data: {} };
 });
 
 ipcMain.on("floatWindowMoving", (e, { mouseX, mouseY }) => {
