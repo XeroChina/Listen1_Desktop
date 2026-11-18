@@ -35,6 +35,11 @@
     "productName": "Listen1",
     "asar": true,
     "artifactName": "${name}_${version}_${os}_${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "XeroChina",
+      "repo": "Listen1_Desktop"
+    },
     "dmg": {
       "icon": "build/disk.icns",
       "contents": [
