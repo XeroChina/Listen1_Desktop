@@ -44,6 +44,10 @@ jobs:
 
       - name: Verify packaged dependencies
         run: |
+          Write-Host "=== app/package.json ==="
+          Get-Content app/package.json
+          Write-Host "=== app/node_modules top ==="
+          Get-ChildItem app/node_modules -Name
           $asar = 'dist/win-unpacked/resources/app.asar'
           if (-not (Test-Path $asar)) { Write-Error "asar not found: $asar"; exit 1 }
           $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($asar))
@@ -53,6 +57,7 @@ jobs:
           }
 
       - name: Upload installer artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: listen1-win-x64
@@ -60,4 +65,5 @@ jobs:
             dist/*.exe
             dist/*.yml
             dist/*.blockmap
+            dist/builder-debug.yml
           if-no-files-found: warn
