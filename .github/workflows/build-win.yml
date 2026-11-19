@@ -21,14 +21,36 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # 必须显式在 app 目录安装：`npm install --prefix app` 会被 npm 误解为
+      # 把根包装进 app，导致 electron-store 等运行时依赖缺失
+      - name: Install app dependencies
+        run: npm install --no-audit --no-fund
+        working-directory: app
+
+      - name: Verify app dependencies
         run: |
-          npm install --no-audit --no-fund
-          npm install --prefix app --no-audit --no-fund
+          $mods = @('electron-store','electron-updater','@electron/remote','chardet','music-metadata')
+          foreach ($m in $mods) {
+            if (-not (Test-Path "app/node_modules/$m")) { Write-Error "missing app dependency: $m"; exit 1 }
+            Write-Host "ok: $m"
+          }
 
       - name: Build Windows installer
         run: npx electron-builder --win nsis --x64 --publish never
         env:
           GH_TOKEN: ${{ secrets.github_token }}
+
+      - name: Verify packaged dependencies
+        run: |
+          $asar = 'dist/win-unpacked/resources/app.asar'
+          if (-not (Test-Path $asar)) { Write-Error "asar not found: $asar"; exit 1 }
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($asar))
+          foreach ($m in @('electron-store','electron-updater','@electron/remote','chardet','music-metadata')) {
+            if (-not $text.Contains("node_modules/$m/")) { Write-Error "asar missing dependency: $m"; exit 1 }
+            Write-Host "asar ok: $m"
+          }
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
