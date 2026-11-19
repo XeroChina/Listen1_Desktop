@@ -43,14 +43,20 @@ jobs:
           GH_TOKEN: ${{ secrets.github_token }}
 
       - name: Verify packaged dependencies
+        shell: bash
         run: |
-          $asar = 'dist/win-unpacked/resources/app.asar'
-          if (-not (Test-Path $asar)) { Write-Error "asar not found: $asar"; exit 1 }
-          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($asar))
-          foreach ($m in @('electron-store','electron-updater','@electron/remote','chardet','music-metadata')) {
-            if (-not $text.Contains("node_modules/$m/")) { Write-Error "asar missing dependency: $m"; exit 1 }
-            Write-Host "asar ok: $m"
-          }
+          node -e '
+            const fs = require("fs");
+            const b = fs.readFileSync("dist/win-unpacked/resources/app.asar");
+            const hss = b.readUInt32LE(4);
+            const hdr = b.toString("utf8", 8, 8 + hss);
+            const obj = JSON.parse(hdr.slice(hdr.indexOf("{"), hdr.lastIndexOf("}") + 1));
+            const has = (o, path) => path.split("/").every((s) => (o = o.files && o.files[s]) !== undefined);
+            for (const m of ["electron-store","electron-updater","@electron/remote","chardet","music-metadata"]) {
+              if (!has(obj.files.node_modules, m)) { console.error("asar missing dependency: " + m); process.exit(1); }
+              console.log("asar ok: " + m);
+            }
+          '
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4

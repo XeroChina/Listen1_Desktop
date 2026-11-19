@@ -24,7 +24,7 @@ jobs:
         run: npm install --no-audit --no-fund
 
       # 必须显式在 app 目录安装：`npm install --prefix app` 会被 npm 误解为
-      # 把根包装进 app，导致 electron-store 等运行时依赖缺失
+      # 把当前根包装进 app，导致 electron-store 等运行时依赖被打掉
       - name: Install app dependencies
         run: npm install --no-audit --no-fund
         working-directory: app
@@ -43,21 +43,22 @@ jobs:
           GH_TOKEN: ${{ secrets.github_token }}
 
       - name: Verify packaged dependencies
+        shell: bash
         run: |
-          Write-Host "=== app/package.json ==="
-          Get-Content app/package.json
-          Write-Host "=== app/node_modules top ==="
-          Get-ChildItem app/node_modules -Name
-          $asar = 'dist/win-unpacked/resources/app.asar'
-          if (-not (Test-Path $asar)) { Write-Error "asar not found: $asar"; exit 1 }
-          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($asar))
-          foreach ($m in @('electron-store','electron-updater','@electron/remote','chardet','music-metadata')) {
-            if (-not $text.Contains("node_modules/$m/")) { Write-Error "asar missing dependency: $m"; exit 1 }
-            Write-Host "asar ok: $m"
-          }
+          node -e '
+            const fs = require("fs");
+            const b = fs.readFileSync("dist/win-unpacked/resources/app.asar");
+            const hss = b.readUInt32LE(4);
+            const hdr = b.toString("utf8", 8, 8 + hss);
+            const obj = JSON.parse(hdr.slice(hdr.indexOf("{"), hdr.lastIndexOf("}") + 1));
+            const has = (o, path) => path.split("/").every((s) => (o = o.files && o.files[s]) !== undefined);
+            for (const m of ["electron-store","electron-updater","@electron/remote","chardet","music-metadata"]) {
+              if (!has(obj.files.node_modules, m)) { console.error("asar missing dependency: " + m); process.exit(1); }
+              console.log("asar ok: " + m);
+            }
+          '
 
       - name: Upload installer artifacts
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: listen1-win-x64
@@ -65,5 +66,4 @@ jobs:
             dist/*.exe
             dist/*.yml
             dist/*.blockmap
-            dist/builder-debug.yml
           if-no-files-found: warn
