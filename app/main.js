@@ -13,12 +13,41 @@ const {
 const Store = require("electron-store");
 const { autoUpdater } = require("electron-updater");
 const remoteMain = require("@electron/remote/main");
-const { join } = require("path");
+const fs = require("fs");
+const { dirname, join, resolve } = require("path");
+
+// 便携模式：程序位于 "<根目录>/Program/" 时，若 "<根目录>/portable" 标志文件存在，
+// 则把所有用户数据（配置、cookie、会话等）集中到 "<根目录>/Data"。
+// launcher 会以 `--listen1-portable <根目录>` 启动；
+// 直接运行 Program/Listen1.exe 时也会自动探测上级目录的 portable 文件。
+function detectPortableRoot() {
+  const argv = process.argv.slice(1);
+  const flagIndex = argv.indexOf("--listen1-portable");
+  if (flagIndex !== -1 && argv[flagIndex + 1]) {
+    return argv[flagIndex + 1];
+  }
+  const parentDir = resolve(dirname(process.execPath), "..");
+  if (fs.existsSync(join(parentDir, "portable"))) {
+    return parentDir;
+  }
+  return null;
+}
+
+const portableRoot = detectPortableRoot();
+if (portableRoot) {
+  const dataDir = join(portableRoot, "Data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  // 必须在 app ready 之前、且早于 electron-store 初始化调用
+  app.setPath("userData", dataDir);
+}
 
 const store = new Store();
 const iconPath = join(__dirname, "/listen1_chrome_extension/images/logo.png");
 
-autoUpdater.checkForUpdatesAndNotify();
+// 便携模式下 Program 目录可能是只读的，自动更新会改写它，因此跳过
+if (!portableRoot) {
+  autoUpdater.checkForUpdatesAndNotify();
+}
 
 let floatingWindowCssKey = undefined,
   appIcon = null,

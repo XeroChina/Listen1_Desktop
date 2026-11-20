@@ -58,6 +58,11 @@ jobs:
             }
           '
 
+      - name: Build portable package
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          ./scripts/build-portable.ps1 -AppDir dist/win-unpacked -Version $v -Arch x64
+
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -66,4 +71,5 @@ jobs:
             dist/*.exe
             dist/*.yml
             dist/*.blockmap
+            dist/*portable.zip
           if-no-files-found: warn
